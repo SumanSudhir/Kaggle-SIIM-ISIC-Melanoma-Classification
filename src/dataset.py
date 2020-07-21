@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import PIL
 from PIL import Image
+import cv2
 from torch.utils.data import Dataset
 
 
@@ -27,14 +28,18 @@ class MelanomaDataset(Dataset):
         im_path = os.path.join(
             self.imfolder, self.df.iloc[index]['image_name'] + '.jpg')
         img = Image.open(im_path)
-#         meta = np.array(
-#             self.df.iloc[index][self.meta_features].values, dtype=np.float32)
-        label = self.df.iloc[index]['target']
+#         img = cv2.imread(im_path)
+        meta = np.array(
+            self.df.iloc[index][self.meta_features].values, dtype=np.float32)
 
         if self.transforms:
             img = self.transforms(img)
 
-        return img, label
+        if self.train:
+            label = self.df.iloc[index]['target']
+            return img, label, meta
+
+        return img, meta
 
     def __len__(self):
         return len(self.df)
