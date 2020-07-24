@@ -21,7 +21,7 @@ import torch.nn.functional as F
 
 from dataset import MelanomaDataset
 from modules import ResNetModel, EfficientModel
-from utils import DrawHair
+from utils import DrawHair, ImbalancedDatasetSampler
 
 
 from torch.utils.tensorboard import SummaryWriter
@@ -30,12 +30,15 @@ import time
 """ Initialization"""
 nfolds = 5
 SEED = 45
-split = 0
+split = 4
 epochs = 30
 DEBUG = False
 
-train = '../data/jpeg/train'
-labels = '../data/my_train.csv'
+train = '../combined_256'
+# train = '../data_384/train'
+# train = '../data/jpeg/train'
+# labels = '../data/my_train.csv'
+labels = '../data/train_combined.csv'
 
 
 def seed_everything(seed):
@@ -46,7 +49,7 @@ def seed_everything(seed):
     torch.cuda.manual_seed(seed)
     # torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = False
 
 
 seed_everything(SEED)
@@ -93,8 +96,8 @@ print("Usable Length", len(df))
 """ Dataset """
 
 train_transform = transforms.Compose([
-                        DrawHair(),
-                        transforms.Resize((256,256)),
+#                         DrawHair(),
+#                         transforms.Resize((256,256)),
                         transforms.RandomHorizontalFlip(),
                         transforms.RandomVerticalFlip(),
                         transforms.ColorJitter(brightness=32. / 255.,saturation=0.5),
@@ -106,7 +109,7 @@ train_transform = transforms.Compose([
 
 
 valid_transform=transforms.Compose([
-                        transforms.Resize((256,256)),
+#                         transforms.Resize((256,256)),
                         transforms.ToTensor(),
                         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[
                                              0.229, 0.224, 0.225])])
@@ -122,8 +125,8 @@ v_dataset=MelanomaDataset(df=df_valid, imfolder=train,
 print('Length of training and validation set are {} {}'.format(
     len(t_dataset), len(v_dataset)))
 
-trainloader=DataLoader(t_dataset, batch_size=64, shuffle=True, num_workers=8, drop_last=True)
-validloader=DataLoader(v_dataset, batch_size=64, shuffle=False, num_workers=8)
+trainloader=DataLoader(t_dataset, batch_size=96, shuffle=True, num_workers=8)
+validloader=DataLoader(v_dataset, batch_size=96, shuffle=False, num_workers=8)
 
 
 """ Training """
@@ -133,11 +136,11 @@ model.to(device)
 # model = nn.DataParallel(model)
 
 criterion=nn.BCEWithLogitsLoss()
-optimizer=torch.optim.Adam(model.parameters(), lr=3e-4, betas=(0.9, 0.999))
+optimizer=torch.optim.Adam(model.parameters(), lr=1e-3, betas=(0.9, 0.999))
 scheduler=torch.optim.lr_scheduler.OneCycleLR(
-    optimizer, max_lr=3e-4, div_factor=10, pct_start=1 / epochs, steps_per_epoch=len(trainloader), epochs=epochs)
+    optimizer, max_lr=1e-3, div_factor=10, pct_start=1 / epochs, steps_per_epoch=len(trainloader), epochs=epochs)
 
-writer = SummaryWriter(f'../checkpoint/split_{split}/efficient')
+writer = SummaryWriter(f'../checkpoint/split_{split}/efficient_256')
 
 print(f'Training Started Split_{split}')
 training_loss = []
@@ -173,7 +176,6 @@ for epoch in range(epochs):
         train_label.append(label.cpu())
 
         avg_train_loss += loss.detach().item()
-#         print(optimizer.param_groups[0]["lr"])
         scheduler.step()
 
     model.eval()
@@ -207,8 +209,12 @@ for epoch in range(epochs):
 
     avg_train_loss /= len(trainloader)
     avg_valid_loss /= len(validloader)
-    train_acc = (train_pred == train_label).mean()
-    valid_acc = (valid_pred == valid_label).mean()
+
+#     train_acc = (train_pred == train_label).mean()
+#     valid_acc = (valid_pred == valid_label).mean()
+
+    train_acc = (train_cm[0,0] + train_cm[1,1])/np.sum(train_cm)
+    valid_acc = (valid_cm[0,0] + valid_cm[1,1])/np.sum(valid_cm)
 
     train_roc = roc_auc_score(train_label, train_prob)
     valid_roc = roc_auc_score(valid_label, valid_prob)
@@ -230,9 +236,9 @@ for epoch in range(epochs):
     writer.add_scalar('Learning Rate', l_rate, epoch)
 
     if(c_acc<valid_roc):
-        torch.save(model.state_dict(), "../checkpoint/split_{}/efficient/efficient_1_{}_{:.4f}.pth".format(split, epoch+1, valid_roc))
-        np.savetxt('../checkpoint/split_{}/efficient/valid_cm_{}_{:.4f}.txt'.format(split, epoch+1, valid_roc), valid_cm, fmt='%10.0f')
-        np.savetxt('../checkpoint/split_{}/efficient/train_cm_{}_{:.4f}.txt'.format(split, epoch+1, valid_roc), train_cm, fmt='%10.0f')
+        torch.save(model.state_dict(), "../checkpoint/split_{}/efficient_256/efficient_256_{}_{:.4f}.pth".format(split, epoch+1, valid_roc))
+        np.savetxt('../checkpoint/split_{}/efficient_256/valid_cm_{}_{:.4f}.txt'.format(split, epoch+1, valid_roc), valid_cm, fmt='%10.0f')
+        np.savetxt('../checkpoint/split_{}/efficient_256/train_cm_{}_{:.4f}.txt'.format(split, epoch+1, valid_roc), train_cm, fmt='%10.0f')
         c_acc = valid_roc
 
 #     scheduler.step(avg_valid_loss)
