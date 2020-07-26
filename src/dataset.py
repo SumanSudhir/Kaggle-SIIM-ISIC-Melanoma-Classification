@@ -26,20 +26,23 @@ class MelanomaDataset(Dataset):
 
     def __getitem__(self, index):
         im_path = os.path.join(
-            self.imfolder, self.df.iloc[index]['image_name'] + '.jpg')
-        img = Image.open(im_path)
-#         img = cv2.imread(im_path)
+            self.imfolder, self.df.iloc[index]['image_id'] + '.jpg')
+#         image = Image.open(im_path)
+        image = cv2.imread(im_path)
         meta = np.array(
             self.df.iloc[index][self.meta_features].values, dtype=np.float32)
 
         if self.transforms:
-            img = self.transforms(img)
+            sample = self.transforms(image=image)
+            image  = sample['image']
+#             img = self.transforms(**img)
+
 
         if self.train:
             label = self.df.iloc[index]['target']
-            return img, label, meta
+            return image, label, meta
 
-        return img, meta
+        return image, meta
 
     def __len__(self):
         return len(self.df)

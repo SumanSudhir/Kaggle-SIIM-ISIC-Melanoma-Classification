@@ -33,7 +33,7 @@ class EfficientModel(nn.Module):
         super().__init__()
         self.enet = EfficientNet.from_pretrained('efficientnet-b0')
 
-        self.dropout_fc = nn.Dropout(0.2)
+        self.dropout_fc = nn.Dropout(0.1)
 
         self.head = nn.Sequential(AdaptiveConcatPool2d(),
                                   nn.Flatten(),
@@ -70,3 +70,38 @@ class EfficientModel(nn.Module):
         out = self.dropout_fc(out)
 
         return out
+
+
+class EfficientModelwithoutMeta(nn.Module):
+    def __init__(self, num_class=1):
+        super().__init__()
+        self.enet = EfficientNet.from_pretrained('efficientnet-b0')
+
+        self.dropout_fc = nn.Dropout(0.1)
+
+        self.head = nn.Sequential(AdaptiveConcatPool2d(),
+                                  nn.Flatten(),
+                                  nn.Linear(2*self.enet._fc.in_features, num_class))
+#                                   nn.BatchNorm1d(512),
+#                                   nn.ReLU(),
+#                                   nn.Dropout(p=0.5),
+#                                   nn.Linear(512, num_class))
+
+
+    def forward(self, x,y):
+        x = self.enet.extract_features(x)
+
+        x = self.head(x)
+#         x = self.dropout_fc(x)
+
+        return x
+
+
+class Model(nn.Module):
+    def __init__(self, arch='efficientnet-b0', num_class=1):
+        super().__init__()
+        self.net = EfficientNet.from_pretrained(arch, advprop=True)
+        self.net._fc = nn.Linear(in_features=self.net._fc.in_features, out_features=num_class, bias=True)
+
+    def forward(self, x):
+        return self.net(x)

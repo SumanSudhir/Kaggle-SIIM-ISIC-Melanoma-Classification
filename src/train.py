@@ -17,28 +17,37 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 import torch.nn.functional as F
+import albumentations as A
+from albumentations.pytorch.transforms import ToTensorV2
 
 
 from dataset import MelanomaDataset
-from modules import ResNetModel, EfficientModel
+from modules import ResNetModel, EfficientModel, EfficientModelwithoutMeta, Model
 from utils import DrawHair, ImbalancedDatasetSampler
+from torch.utils.data.sampler import WeightedRandomSampler
 
 
 from torch.utils.tensorboard import SummaryWriter
 import time
 
 """ Initialization"""
-nfolds = 5
+nfolds = 4
 SEED = 45
-split = 4
-epochs = 30
+fold = 1
+epochs = 20
+resolution = 384  # orignal res for B5
+input_res  = 512
+label_smoothing = 0.03
 DEBUG = False
 
-train = '../combined_256'
+# train = '../combined_256'
+# external = '../data/external_mal.csv'
 # train = '../data_384/train'
+train = '../data_merged_512/512x512-dataset-melanoma/512x512-dataset-melanoma'
 # train = '../data/jpeg/train'
 # labels = '../data/my_train.csv'
-labels = '../data/train_combined.csv'
+labels = '../data_merged_512/folds.csv'
+# labels = '../data/train_combined.csv'
 
 
 def seed_everything(seed):
@@ -66,27 +75,42 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 """Split dataset in n Folds"""
 df = pd.read_csv(labels)
 
-splits = StratifiedKFold(n_splits=nfolds, random_state=SEED, shuffle=True)
-splits = list(splits.split(df, df.target))
-folds_splits = np.zeros(len(df)).astype(np.int)
+# splits = StratifiedKFold(n_splits=nfolds, random_state=SEED, shuffle=True)
+# splits = list(splits.split(df, df.target))
+# folds_splits = np.zeros(len(df)).astype(np.int)
 
-for i in range(nfolds):
-    folds_splits[splits[i][1]] = i
-df["split"] = folds_splits
+# for i in range(nfolds):
+#     folds_splits[splits[i][1]] = i
+# df["split"] = folds_splits
+
+
+""" External Data """
+# df_ext = pd.read_csv(external)
+# df_ext["split"] = 10
+
+# df_new = pd.concat([df, df_ext], ignore_index=True)
+# print(df_new.tail())
+# df = df_new.sample(frac=1).reset_index(drop=True)
 
 """ Normalizing Meta features"""
 ## Sex Features
 df['sex'] = df['sex'].map({'male': 1, 'female': 0})
 df["sex"] = df["sex"].fillna(-1)
 
+## anatom_site_general_challenge Features oral/genital
+df['anatom_site_general_challenge'] = df['anatom_site_general_challenge'].map({'anterior torso': 0, 'head/neck': 1, 'lateral torso': 2, 'lower extremity': 3, 'oral/genital': 4, 'palms/soles': 5, 'posterior torso': 6, 'torso': 7, 'upper extremity': 8})
+
+df["anatom_site_general_challenge"] = df["anatom_site_general_challenge"].fillna(-1)
+df["anatom_site_general_challenge"] /= df["anatom_site_general_challenge"].max()
+
 ## Age Features
 df["age_approx"] /= df["age_approx"].max()
 df['age_approx'] = df['age_approx'].fillna(0)
 
-meta_features = ['sex', 'age_approx']
+meta_features = ['sex', 'age_approx', 'anatom_site_general_challenge']
 
 
-print(df.head())
+print(df.tail())
 
 print("Previous Length", len(df))
 if DEBUG:
@@ -95,27 +119,69 @@ print("Usable Length", len(df))
 
 """ Dataset """
 
-train_transform = transforms.Compose([
-#                         DrawHair(),
-#                         transforms.Resize((256,256)),
-                        transforms.RandomHorizontalFlip(),
-                        transforms.RandomVerticalFlip(),
-                        transforms.ColorJitter(brightness=32. / 255.,saturation=0.5),
-#                         transforms.Cutout(scale=(0.05, 0.007), value=(0, 0)),
-                        transforms.ToTensor(),
-                        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[
-                                             0.229, 0.224, 0.225])
-                        ])
+# train_transform = transforms.Compose([
+# #                         DrawHair(),
+# #                         transforms.Resize((256,256)),
+#                         transforms.RandomHorizontalFlip(),
+#                         transforms.RandomVerticalFlip(),
+#                         transforms.ColorJitter(brightness=32. / 255.,saturation=0.5),
+# #                         transforms.Cutout(scale=(0.05, 0.007), value=(0, 0)),
+#                         transforms.ToTensor(),
+#                         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[
+#                                              0.229, 0.224, 0.225])
+#                         ])
 
 
-valid_transform=transforms.Compose([
-#                         transforms.Resize((256,256)),
-                        transforms.ToTensor(),
-                        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[
-                                             0.229, 0.224, 0.225])])
+# valid_transform=transforms.Compose([
+# #                         transforms.Resize((256,256)),
+#                         transforms.ToTensor(),
+#                         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[
+#                                              0.229, 0.224, 0.225])])
 
-df_train=df[df['split'] != split]
-df_valid=df[df['split'] == split]
+
+train_transform = A.Compose([
+                            A.JpegCompression(p=0.5),
+                            A.Rotate(limit=80, p=1.0),
+                            A.OneOf([
+                                A.OpticalDistortion(),
+                                A.GridDistortion(),
+                                A.IAAPiecewiseAffine(),
+                            ]),
+                            A.RandomSizedCrop(min_max_height=(int(resolution*0.7), input_res),
+                                                height=resolution, width=resolution, p=1.0),
+                            A.HorizontalFlip(p=0.5),
+                            A.VerticalFlip(p=0.5),
+                            A.GaussianBlur(p=0.3),
+                            A.OneOf([
+                                A.RandomBrightnessContrast(),
+                                A.HueSaturationValue(),
+                            ]),
+                            A.Cutout(num_holes=8, max_h_size=resolution//8, max_w_size=resolution//8, fill_value=0, p=0.3),
+                            A.Normalize(),
+                            ToTensorV2(),
+                            ], p=1.0)
+
+
+valid_transform = A.Compose([
+                            A.CenterCrop(height=resolution, width=resolution, p=1.0),
+                            A.Normalize(),
+                            ToTensorV2(),
+                            ], p=1.0)
+
+
+
+
+df_train=df[df['fold'] != fold]
+df_valid=df[df['fold'] == fold]
+
+class_sample_count = np.array([len(np.where(df_train["target"]==t)[0]) for t in np.unique(df_train["target"])])
+print(class_sample_count)
+
+weight = 1. / class_sample_count
+samples_weight = np.array([weight[t] for t in df_train["target"]])
+samples_weight = torch.from_numpy(samples_weight)
+sampler = WeightedRandomSampler(samples_weight.type('torch.DoubleTensor'), len(samples_weight))
+# print(samples_weight)
 
 t_dataset=MelanomaDataset(df=df_train, imfolder=train,
                           train=True, transforms=train_transform, meta_features=meta_features)
@@ -125,24 +191,25 @@ v_dataset=MelanomaDataset(df=df_valid, imfolder=train,
 print('Length of training and validation set are {} {}'.format(
     len(t_dataset), len(v_dataset)))
 
-trainloader=DataLoader(t_dataset, batch_size=96, shuffle=True, num_workers=8)
-validloader=DataLoader(v_dataset, batch_size=96, shuffle=False, num_workers=8)
-
+trainloader=DataLoader(t_dataset, batch_size=32, shuffle=True, num_workers=32)
+validloader=DataLoader(v_dataset, batch_size=32, shuffle=False, num_workers=32)
 
 """ Training """
 # model = ResNetModel()
-model = EfficientModel(n_meta_features=len(meta_features))
+# model = EfficientModelwithoutMeta()
+model = Model(arch='efficientnet-b2')
+# model = EfficientModel(n_meta_features=len(meta_features))
 model.to(device)
 # model = nn.DataParallel(model)
 
 criterion=nn.BCEWithLogitsLoss()
-optimizer=torch.optim.Adam(model.parameters(), lr=1e-3, betas=(0.9, 0.999))
+optimizer=torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.999))
 scheduler=torch.optim.lr_scheduler.OneCycleLR(
-    optimizer, max_lr=1e-3, div_factor=10, pct_start=1 / epochs, steps_per_epoch=len(trainloader), epochs=epochs)
+    optimizer, max_lr=3e-4, div_factor=10, pct_start=1 / epochs, steps_per_epoch=len(trainloader), epochs=epochs)
 
-writer = SummaryWriter(f'../checkpoint/split_{split}/efficient_256')
+writer = SummaryWriter(f'../checkpoint/fold_{fold}/efficient_512')
 
-print(f'Training Started Split_{split}')
+print(f'Training Started Fold_{fold}')
 training_loss = []
 validation_loss = []
 c_acc = 0.0
@@ -165,8 +232,9 @@ for epoch in range(epochs):
 
 #         print(img.shape, label)
         optimizer.zero_grad()
-        logits = model(img,meta)
-        loss = criterion(logits.squeeze(1).float(), label.float())
+        label_smo = label.float() * (1 - label_smoothing) + 0.5 * label_smoothing
+        logits = model(img)
+        loss = criterion(logits.squeeze(1).float(), label_smo.type_as(logits).float())
         loss.backward()
         optimizer.step()
 
@@ -185,9 +253,10 @@ for epoch in range(epochs):
             if train_on_gpu:
                 img, label, meta = img.to(device), label.to(device), meta.to(device)
 
-            logits = model(img, meta)
+            label_smo = label.float() * (1 - label_smoothing) + 0.5 * label_smoothing
+            logits = model(img)
+            val_loss = criterion(logits.squeeze(1).float(), label_smo.type_as(logits).float())
 
-            val_loss = criterion(logits.squeeze(1).float(), label.float())
             avg_valid_loss += val_loss.item()
 
             pred = logits.sigmoid().cpu()
@@ -236,9 +305,9 @@ for epoch in range(epochs):
     writer.add_scalar('Learning Rate', l_rate, epoch)
 
     if(c_acc<valid_roc):
-        torch.save(model.state_dict(), "../checkpoint/split_{}/efficient_256/efficient_256_{}_{:.4f}.pth".format(split, epoch+1, valid_roc))
-        np.savetxt('../checkpoint/split_{}/efficient_256/valid_cm_{}_{:.4f}.txt'.format(split, epoch+1, valid_roc), valid_cm, fmt='%10.0f')
-        np.savetxt('../checkpoint/split_{}/efficient_256/train_cm_{}_{:.4f}.txt'.format(split, epoch+1, valid_roc), train_cm, fmt='%10.0f')
+        torch.save(model.state_dict(), "../checkpoint/fold_{}/efficient_512/efficient_512_{}_{:.4f}.pth".format(fold, epoch+1, valid_roc))
+        np.savetxt('../checkpoint/fold_{}/efficient_512/valid_cm_{}_{:.4f}.txt'.format(fold, epoch+1, valid_roc), valid_cm, fmt='%10.0f')
+        np.savetxt('../checkpoint/fold_{}/efficient_512/train_cm_{}_{:.4f}.txt'.format(fold, epoch+1, valid_roc), train_cm, fmt='%10.0f')
         c_acc = valid_roc
 
 #     scheduler.step(avg_valid_loss)
