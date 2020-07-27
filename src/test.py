@@ -25,7 +25,7 @@ import time
 
 """ Initialization"""
 SEED = 45
-resolution = 384  # orignal res for B5
+resolution = 320  # orignal res for B5
 input_res  = 512
 DEBUG = False
 
@@ -102,7 +102,7 @@ test_transform = A.Compose([
                             A.HorizontalFlip(p=0.5),
                             A.VerticalFlip(p=0.5),
                             A.Transpose(p=0.5),
-                            A.Normalize(),
+                            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
                             ToTensorV2(),
                         ], p=1.0)
 
@@ -113,30 +113,50 @@ t_dataset=MelanomaDataset(df=df, imfolder=test,
 
 print('Length of test set is {}'.format(len(t_dataset)))
 
-testloader=DataLoader(t_dataset, batch_size=4, shuffle=False, num_workers=8)
+testloader=DataLoader(t_dataset, batch_size=8, shuffle=False, num_workers=8)
 
 """Testing"""
 # model = ResNetModel()()
 # model = EfficientModel()
 # model = EfficientModel(n_meta_features=len(meta_features))
-model = Model(arch='efficientnet-b2')
-model.load_state_dict(torch.load("../checkpoint/fold_1/efficient_512/efficient_512_7_0.9262.pth", map_location=torch.device(device)))
+model = Model(arch='efficientnet-b1')
+# model.load_state_dict(torch.load("../checkpoint/fold_1/efficient_256/efficientb0_256_14_0.9212.pth", map_location=torch.device(device)))
+model.load_state_dict(torch.load("..//checkpoint/fold_1/efficient_320/efficientb1_320_14_0.9293.pth", map_location=torch.device(device)))
 model.to(device)
 
 model.eval()
-test_prob = []
+test_prob_stack = []
+img_ids = []
 with torch.no_grad():
-    for img, meta in tqdm(testloader):
-        if train_on_gpu:
-            img, meta = img.to(device), meta.to(device)
+    for i in range(15):
+        test_prob = []
+        for img, meta, img_id in tqdm(testloader):
+            if train_on_gpu:
+                img, meta = img.to(device), meta.to(device)
 
-        logits = model.forward(img)
+            logits = model.forward(img)
 
-        pred = logits.sigmoid().detach().cpu()
-        test_prob.append(pred)
+            pred = logits.sigmoid().detach().cpu()
+            test_prob.append(pred)
 
-test_prob = torch.cat(test_prob).cpu().numpy()
+            if i == 0:
+                img_ids.append(img_id)
 
-sub = pd.read_csv(sample)
-sub['target'] = test_prob.reshape(-1,)
-sub.to_csv('../submission/submission_15.csv', index=False)
+        test_prob = torch.cat(test_prob).cpu()
+        test_prob_stack.append(test_prob)
+
+test_prob_stack = torch.stack([test_prob_stack[0], test_prob_stack[1], test_prob_stack[2], test_prob_stack[3], test_prob_stack[4], test_prob_stack[5], test_prob_stack[6], test_prob_stack[7], test_prob_stack[8], test_prob_stack[9], test_prob_stack[10], test_prob_stack[11], test_prob_stack[12], test_prob_stack[13], test_prob_stack[14]], dim=0)
+
+test_prob_avg = torch.mean(test_prob_stack, dim=0).numpy()
+
+test_prob_avg = np.concatenate(test_prob_avg, axis=None)
+img_ids = np.concatenate(img_ids, axis=None)
+
+sub_df = pd.DataFrame({'image_name': img_ids, 'target': test_prob_avg})
+sub_df.to_csv('../submission/submission_b1_320.csv', index=False)
+print(sub_df.head())
+
+# print(test_prob_avg)
+# sub = pd.read_csv(sample)
+# sub['target'] = test_prob_avg.reshape(-1,)
+# sub.to_csv('../submission/submission_15.csv', index=False)

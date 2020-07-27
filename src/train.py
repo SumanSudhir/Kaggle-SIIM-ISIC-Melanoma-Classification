@@ -35,8 +35,8 @@ nfolds = 4
 SEED = 45
 fold = 1
 epochs = 20
-resolution = 384  # orignal res for B5
 input_res  = 512
+resolution = 384  # res for model
 label_smoothing = 0.03
 DEBUG = False
 
@@ -114,7 +114,7 @@ print(df.tail())
 
 print("Previous Length", len(df))
 if DEBUG:
-    df = df[:5000]
+    df = df[:500]
 print("Usable Length", len(df))
 
 """ Dataset """
@@ -156,15 +156,20 @@ train_transform = A.Compose([
                                 A.RandomBrightnessContrast(),
                                 A.HueSaturationValue(),
                             ]),
+                            A.OneOf([#off in most cases
+                                A.MotionBlur(blur_limit=3, p=0.1),
+                                A.MedianBlur(blur_limit=3, p=0.1),
+                                A.Blur(blur_limit=3, p=0.1),
+                            ], p=0.2),
                             A.Cutout(num_holes=8, max_h_size=resolution//8, max_w_size=resolution//8, fill_value=0, p=0.3),
-                            A.Normalize(),
+                            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
                             ToTensorV2(),
                             ], p=1.0)
 
 
 valid_transform = A.Compose([
                             A.CenterCrop(height=resolution, width=resolution, p=1.0),
-                            A.Normalize(),
+                            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
                             ToTensorV2(),
                             ], p=1.0)
 
@@ -177,10 +182,10 @@ df_valid=df[df['fold'] == fold]
 class_sample_count = np.array([len(np.where(df_train["target"]==t)[0]) for t in np.unique(df_train["target"])])
 print(class_sample_count)
 
-weight = 1. / class_sample_count
-samples_weight = np.array([weight[t] for t in df_train["target"]])
-samples_weight = torch.from_numpy(samples_weight)
-sampler = WeightedRandomSampler(samples_weight.type('torch.DoubleTensor'), len(samples_weight))
+# weight = 1. / class_sample_count
+# samples_weight = np.array([weight[t] for t in df_train["target"]])
+# samples_weight = torch.from_numpy(samples_weight)
+# sampler = WeightedRandomSampler(samples_weight.type('torch.DoubleTensor'), len(samples_weight))
 # print(samples_weight)
 
 t_dataset=MelanomaDataset(df=df_train, imfolder=train,
@@ -191,8 +196,8 @@ v_dataset=MelanomaDataset(df=df_valid, imfolder=train,
 print('Length of training and validation set are {} {}'.format(
     len(t_dataset), len(v_dataset)))
 
-trainloader=DataLoader(t_dataset, batch_size=32, shuffle=True, num_workers=32)
-validloader=DataLoader(v_dataset, batch_size=32, shuffle=False, num_workers=32)
+trainloader=DataLoader(t_dataset, batch_size=32, shuffle=True, num_workers=8)
+validloader=DataLoader(v_dataset, batch_size=32, shuffle=False, num_workers=8)
 
 """ Training """
 # model = ResNetModel()
@@ -207,7 +212,7 @@ optimizer=torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.999))
 scheduler=torch.optim.lr_scheduler.OneCycleLR(
     optimizer, max_lr=3e-4, div_factor=10, pct_start=1 / epochs, steps_per_epoch=len(trainloader), epochs=epochs)
 
-writer = SummaryWriter(f'../checkpoint/fold_{fold}/efficient_512')
+writer = SummaryWriter(f'../checkpoint/fold_{fold}/efficient_{resolution}')
 
 print(f'Training Started Fold_{fold}')
 training_loss = []
@@ -230,7 +235,7 @@ for epoch in range(epochs):
         if train_on_gpu:
             img, label, meta = img.to(device), label.to(device), meta.to(device)
 
-#         print(img.shape, label)
+#         print(img.shape, label.shape)
         optimizer.zero_grad()
         label_smo = label.float() * (1 - label_smoothing) + 0.5 * label_smoothing
         logits = model(img)
@@ -304,10 +309,10 @@ for epoch in range(epochs):
 
     writer.add_scalar('Learning Rate', l_rate, epoch)
 
-    if(c_acc<valid_roc):
-        torch.save(model.state_dict(), "../checkpoint/fold_{}/efficient_512/efficient_512_{}_{:.4f}.pth".format(fold, epoch+1, valid_roc))
-        np.savetxt('../checkpoint/fold_{}/efficient_512/valid_cm_{}_{:.4f}.txt'.format(fold, epoch+1, valid_roc), valid_cm, fmt='%10.0f')
-        np.savetxt('../checkpoint/fold_{}/efficient_512/train_cm_{}_{:.4f}.txt'.format(fold, epoch+1, valid_roc), train_cm, fmt='%10.0f')
+    if(c_acc<valid_roc or valid_roc > 0.90):
+        torch.save(model.state_dict(), "../checkpoint/fold_{}/efficient_{}/efficientb2_{}_{}_{:.4f}.pth".format(fold, resolution, resolution, epoch+1, valid_roc))
+        np.savetxt('../checkpoint/fold_{}/efficient_{}/valid_cm_{}_{:.4f}.txt'.format(fold, resolution, epoch+1, valid_roc), valid_cm, fmt='%10.0f')
+        np.savetxt('../checkpoint/fold_{}/efficient_{}/train_cm_{}_{:.4f}.txt'.format(fold, resolution, epoch+1, valid_roc), train_cm, fmt='%10.0f')
         c_acc = valid_roc
 
 #     scheduler.step(avg_valid_loss)
